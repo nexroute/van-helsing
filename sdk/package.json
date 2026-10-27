@@ -1,0 +1,25 @@
+{
+  "name": "@nexroute/van-helsing",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Plan VanHelsing's protection of a swap: the ward() calls around it, weighed against their gas.",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "viem": "^2.54.4"
+  },
+  "license": "MIT",
+  "homepage": "https://vanhelsing.nexroute.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexroute/van-helsing.git",
+    "directory": "sdk"
+  }
+}
