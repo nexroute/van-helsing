@@ -231,3 +231,130 @@ describe("V3Depth.effectiveLiquidity (anti-sandwich sizing)", function () {
         expect(eff).to.equal(spot);
     });
 });
+
+// A walk for the pool a ward sinks into (dry): where crossing a tick leaves no liquidity, its depth
+// is what the stretch before holds of the way to the target, in the sqrt price a restore is sized
+// in, so a pool whose liquidity ends near its price reads as shallow as it is over the restore.
+// Without it the walk averages only the stretch before the cliff, and a sink with a sliver of
+// liquidity reads deep. Spacing 10, the price at tick 0 (sqrt 1), the target in compressed tick 10
+// (or -10). Expectations from floats, close enough for these.
+describe("V3Depth.effectiveLiquidity, dry (a sink's depth)", function () {
+    let conn, harness;
+    const L = 1000n * ONE;
+
+    before(async function () {
+        conn = await network.create({ network: "hardhat" });
+        harness = await deploy(conn, "V3DepthHarness", null, [], { libraries: { V3Depth: null } });
+    });
+
+    const pool = async (spot, ticks) => {
+        const mock = await deploy(conn, "MockV3TickPool", null, [Q96, 0, spot, 10, TOK0, TOK1]);
+        for (const [t, net] of ticks) await mock.setTick(t, net);
+        return mock.getAddress();
+    };
+    const both = async (addr, target) => [
+        await harness.effectiveLiquidity(addr, target, 8),
+        await harness.effectiveLiquidityDry(addr, target, 8),
+    ];
+
+    const near = (got, want) => expect(Math.abs(Number(got) / want - 1)).to.be.lt(1e-9);
+
+    it("reads what the pool holds of the way to its target, walking up", async function () {
+        // [-20, +20] holds L: token1 to the cliff is L * (sqrt(1.0001^20) - 1)
+        const addr = await pool(L, [[-20, L], [20, -L]]);
+        const target = sqrtAtTick(105);
+        const [plain, dry] = await both(addr, target);
+        expect(plain).to.equal(L);
+        const t = Number(target) / 2 ** 96, edge = Math.sqrt(1.0001 ** 20);
+        near(dry, (Number(L) * (edge - 1)) / (t - 1));
+    });
+
+    it("reads what the pool holds of the way to its target, walking down", async function () {
+        // token0 to the cliff is L * (1 / sqrt(1.0001^-20) - 1)
+        const addr = await pool(L, [[-20, L], [20, -L]]);
+        const target = sqrtAtTick(-95);
+        const [plain, dry] = await both(addr, target);
+        expect(plain).to.equal(L);
+        const t = Number(target) / 2 ** 96, edge = Math.sqrt(1.0001 ** -20);
+        near(dry, (((Number(L) * (1 - edge)) / (1 - t)) * t) / edge);
+    });
+
+    // Any walk that runs dry keeps where in its record: the sqrt price, as TickMath has it, of the
+    // tick whose crossing left no liquidity. One that never runs dry keeps none.
+    it("keeps where it ran dry in its record, either way", async function () {
+        const addr = await pool(L, [[-20, L], [20, -L]]);
+        expect(await harness.cliffOf(addr, sqrtAtTick(105), 8)).to.equal(79307426338960776842885539845n); // tick 20
+        expect(await harness.cliffOf(addr, sqrtAtTick(-95), 8)).to.equal(79148977909814923576066331265n); // tick -20
+        const deep = await pool(L, [[-1000, L], [1000, -L]]);
+        expect(await harness.cliffOf(deep, sqrtAtTick(105), 8)).to.equal(0n);
+    });
+
+    // Liquidity that comes back past a gap before the target, within the walk's steps: the pool is
+    // two islands, and a sink crosses the gap into the second, so its walk keeps no cliff, either
+    // way. A second island past the target leaves the first one's end a cliff.
+    it("keeps no cliff where its liquidity comes back past a gap, either way", async function () {
+        const up = await pool(L, [[-20, L], [20, -L], [40, L], [1000, -L]]);
+        expect(await harness.cliffOf(up, sqrtAtTick(105), 8)).to.equal(0n);
+        const down = await pool(L, [[-1000, L], [-40, -L], [-20, L], [20, -L]]);
+        expect(await harness.cliffOf(down, sqrtAtTick(-95), 8)).to.equal(0n);
+        const far = await pool(L, [[-20, L], [20, -L], [200, L], [1000, -L]]);
+        expect(await harness.cliffOf(far, sqrtAtTick(105), 8)).to.equal(79307426338960776842885539845n); // tick 20
+    });
+
+    // The same when the walk runs dry on its last step: looking past the gap takes none of the
+    // walk's steps. Up, eight positions end one spacing apart, so the walk runs dry crossing its
+    // eighth tick; down, a word's end and seven positions do the same. On BNB Chain an anchor of
+    // seven positions ran dry so, its deep second island went unseen, and the ward captured 40% of
+    // what the deployed contract does.
+    it("keeps no cliff where its liquidity comes back, though it ran dry on its last step", async function () {
+        const stairsUp = [10, 20, 30, 40, 50, 60, 70, 80].map((t) => [t, -L / 8n]);
+        const up = await pool(L, [[-20, L], ...stairsUp, [100, L], [1000, -L]]);
+        expect(await harness.cliffOf(up, sqrtAtTick(205), 8)).to.equal(0n);
+        const farUp = await pool(L, [[-20, L], ...stairsUp, [300, L], [1000, -L]]);
+        expect(await harness.cliffOf(farUp, sqrtAtTick(205), 8)).to.not.equal(0n);
+        const L7 = 700n * ONE;
+        const stairsDown = [-10, -20, -30, -40, -50, -60, -70].map((t) => [t, L7 / 7n]);
+        const down = await pool(L7, [[20, -L7], ...stairsDown, [-90, -L7], [-1000, L7]]);
+        expect(await harness.cliffOf(down, sqrtAtTick(-195), 8)).to.equal(0n);
+        const farDown = await pool(L7, [[20, -L7], ...stairsDown, [-300, -L7], [-1000, L7]]);
+        expect(await harness.cliffOf(farDown, sqrtAtTick(-195), 8)).to.not.equal(0n);
+    });
+
+    // A price inside its tick, a hair under the cliff: the sliver is all the pool holds that way.
+    it("reads a sliver under the cliff as the sliver it is", async function () {
+        const mock = await deploy(conn, "MockV3TickPool", null, [79307426338960776842885539845n - 10n ** 18n, 19, L, 10, TOK0, TOK1]);
+        await mock.setTick(-20, L);
+        await mock.setTick(20, -L);
+        const target = sqrtAtTick(105);
+        const dry = await harness.effectiveLiquidityDry(await mock.getAddress(), target, 8);
+        // the price is 1e18 under the cliff's sqrt price (TickMath at tick 20): differences in BigInt
+        const edge = 79307426338960776842885539845n, cur = edge - 10n ** 18n;
+        near(dry, (Number(L) * Number(edge - cur)) / Number(target - cur));
+        expect(dry).to.be.lt(L / 1_000_000n);
+    });
+
+    it("reads as the plain walk when it never runs dry, either way", async function () {
+        const addr = await pool(L, [[-1000, L], [1000, -L]]);
+        for (const target of [sqrtAtTick(105), sqrtAtTick(-95)]) {
+            const [plain, dry] = await both(addr, target);
+            expect(plain).to.equal(L);
+            expect(dry).to.equal(L);
+        }
+    });
+
+    it("reads as the plain walk from a gap into liquidity, walking up", async function () {
+        // no liquidity at the price; [+30, +1000] holds L: 3 wide at 0, then 7 at L
+        const addr = await pool(0n, [[30, L], [1000, -L]]);
+        const [plain, dry] = await both(addr, sqrtAtTick(105));
+        expect(plain).to.equal((L * 7n) / 10n);
+        expect(dry).to.equal((L * 7n) / 10n);
+    });
+
+    it("reads as the plain walk from a gap into liquidity, walking down", async function () {
+        // no liquidity at the price; [-1000, -30] holds L: 3 wide at 0, then 7 at L
+        const addr = await pool(0n, [[-1000, L], [-30, -L]]);
+        const [plain, dry] = await both(addr, sqrtAtTick(-95));
+        expect(plain).to.equal((L * 7n) / 10n);
+        expect(dry).to.equal((L * 7n) / 10n);
+    });
+});

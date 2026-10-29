@@ -59,6 +59,12 @@ contract PoolPoker {
     function pancakeV3SwapCallback(int256 a0, int256 a1, bytes calldata) external { _pay(a0, a1); }
     function uniswapV3SwapCallback(int256 a0, int256 a1, bytes calldata) external { _pay(a0, a1); }
 
+    // A V3 fork's callback under a name of its own, with the same (int256, int256, bytes) arguments.
+    fallback() external {
+        (int256 a0, int256 a1,) = abi.decode(msg.data[4:], (int256, int256, bytes));
+        _pay(a0, a1);
+    }
+
     function _pay(int256 a0, int256 a1) internal {
         // msg.sender is the pool.
         if (a0 > 0) IERC20Min(IV3Pool(msg.sender).token0()).transfer(msg.sender, uint256(a0));

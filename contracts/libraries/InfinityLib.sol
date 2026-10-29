@@ -9,7 +9,8 @@ import { IHooks } from "@pancakeswap/v4-core/src/interfaces/IHooks.sol";
 import { IPoolManager } from "@pancakeswap/v4-core/src/interfaces/IPoolManager.sol";
 import { ILockCallback } from "@pancakeswap/v4-core/src/interfaces/ILockCallback.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
-import { V4Config, IWBNB } from "./V4Config.sol";
+import { V4Config, IWrappedNative } from "./V4Config.sol";
+import { Chain } from "./Chain.sol";
 
 // What this adapter calls of Pancake Infinity, declared as Pancake's ICLPoolManager and IVault
 // declare it: the CLPoolManager's swap, its BalanceDelta read as the int256 it packs (amount0 in
@@ -33,7 +34,8 @@ interface IInfinityVault {
 // carries a `parameters` bytes32 (tickSpacing + hook flags) instead of a flat tickSpacing,
 // and the callback is lockAcquired (vault.lock) not unlockCallback. Reads the packed
 // config field by field in assembly (V4Config: no abi.decode) and reuses V4Config's
-// alignment, inversion, WBNB and sqrt bounds (Pancake's TickMath bounds match Uniswap's).
+// alignment, inversion, wrapped native and sqrt bounds (Pancake's TickMath bounds match
+// Uniswap's).
 library InfinityLib {
     // The CLPoolManager's swap parameters, as Pancake's ICLPoolManager declares them. A pool's
     // price and liquidity are read from the manager's storage (V4Config.load).
@@ -45,10 +47,11 @@ library InfinityLib {
     using PoolIdLibrary for PoolKey;
     using SafeTransferLib for address;
 
-    // Pancake Infinity on BNB Chain: the CLPoolManager (swap + state) and the Vault (the
-    // one lock + accounting for every Infinity pool).
-    IInfinityCL internal constant CL = IInfinityCL(0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b);
-    IInfinityVault internal constant VAULT = IInfinityVault(0x238a358808379702088667322f80aC48bAd5e6c4);
+    // Pancake Infinity on the chain the build is for (Chain.sol): the CLPoolManager (swap +
+    // state) and the Vault (the one lock + accounting for every Infinity pool), address(0) on a
+    // chain without it.
+    IInfinityCL internal constant CL = IInfinityCL(Chain.INFINITY_CL_POOL_MANAGER);
+    IInfinityVault internal constant VAULT = IInfinityVault(Chain.INFINITY_VAULT);
 
     function key(bytes memory cfg) internal pure returns (PoolKey memory) {
         return PoolKey({
@@ -92,7 +95,7 @@ library InfinityLib {
     }
 
     // Inside the lock: swap on the CLPoolManager and take the output from the Vault to
-    // this contract (native wrapped to WBNB). Token-space direction/limit are translated
+    // this contract (native wrapped). Token-space direction/limit are translated
     // to currency space (a flipped pool reverses the direction and inverts the limit).
     // Returns the input debt and the output.
     function swapTo(bytes memory cfg, bool zeroForOne, int256 amountSpecified, uint160 sqrtLimit)
@@ -114,10 +117,10 @@ library InfinityLib {
             amountOut = uint256(uint128(int128(delta >> 128)));
         }
         VAULT.take(cOut, address(this), amountOut);
-        if (cOut.isNative()) IWBNB(V4Config.WBNB).deposit{value: amountOut}();
+        if (cOut.isNative()) IWrappedNative(V4Config.WRAPPED_NATIVE).deposit{value: amountOut}();
     }
 
-    // Pay `debt` of the input currency to the Vault (native unwrapped from WBNB) and
+    // Pay `debt` of the input currency to the Vault (native unwrapped first) and
     // return what it credited: less than `debt` when the token takes a fee on transfer.
     function settle(bytes memory cfg, bool zeroForOne, uint256 debt) public returns (uint256 paid) {
         bool zfo = V4Config.aligned(cfg) ? zeroForOne : !zeroForOne;
@@ -125,7 +128,7 @@ library InfinityLib {
         Currency cIn = zfo ? k.currency0 : k.currency1;
         VAULT.sync(cIn);
         if (cIn.isNative()) {
-            IWBNB(V4Config.WBNB).withdraw(debt);
+            IWrappedNative(V4Config.WRAPPED_NATIVE).withdraw(debt);
             return VAULT.settle{value: debt}();
         }
         Currency.unwrap(cIn).safeTransfer(address(VAULT), debt);
@@ -140,18 +143,15 @@ library InfinityLib {
         require(settle(cfg, zeroForOne, debt) == debt, "SHORT_SETTLE");
     }
 
-    // Inside the lock: sell exactly `amount` of the input currency. Pay first and swap what
-    // the singleton credited, which is what a token taking a fee on transfer actually
-    // delivered (for any other token it is all of it), then take back whatever the pool
-    // could not use before the price limit, as settling only the swap's debt would.
-    function sinkIn(bytes memory cfg, bool zeroForOne, uint256 amount) public {
+    // Inside the lock: sell exactly `amount` of the input currency, at the price `limit` (0: the
+    // extreme limit). Pay first and swap what the singleton credited, which is what a token taking a
+    // fee on transfer actually delivered (for any other token it is all of it). A sale the pool
+    // stops short, at the limit or past its last liquidity, fails: what it did not take would stay
+    // with VanHelsing.
+    function sinkIn(bytes memory cfg, bool zeroForOne, uint256 amount, uint160 limit) public {
         uint256 paid = settle(cfg, zeroForOne, amount);
-        (uint256 used,) = swapTo(cfg, zeroForOne, -int256(paid), zeroForOne ? V4Config.MIN_SQRT : V4Config.MAX_SQRT);
-        if (used == paid) return;
-        bool zfo = V4Config.aligned(cfg) ? zeroForOne : !zeroForOne;
-        PoolKey memory k = key(cfg);
-        Currency cIn = zfo ? k.currency0 : k.currency1;
-        VAULT.take(cIn, address(this), paid - used);
-        if (cIn.isNative()) IWBNB(V4Config.WBNB).deposit{value: paid - used}();
+        if (limit == 0) limit = zeroForOne ? V4Config.MIN_SQRT : V4Config.MAX_SQRT;
+        (uint256 used,) = swapTo(cfg, zeroForOne, -int256(paid), limit);
+        require(used == paid, "SINK_SHORT");
     }
 }

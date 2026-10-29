@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
 import { FixedPointMathLib } from "solady/src/utils/FixedPointMathLib.sol";
+import { Chain } from "./Chain.sol";
 
 interface ICurvePool {
     function coins(uint256 i) external view returns (address);
@@ -17,14 +18,51 @@ interface IStableSwapPool {
     function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external; // PancakeStableSwap
 }
 
+// A Rialto market, on Robinhood Chain: what VanHelsing calls of it.
+interface IRialtoMarket {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function traderVault() external view returns (address);
+    function getAmountOut(bool zeroForOne, uint256 amountIn) external view returns (uint256);
+    function swapExactIn(bool zeroForOne, uint256 amountIn, uint256 amountOutMin, address to, uint256 deadline)
+        external
+        payable
+        returns (uint256);
+}
+
+// Tessera's entry, on Robinhood Chain: one contract that prices every pair, paying out of one
+// treasury (Chain.TESSERA_TREASURY). A positive amountSpecified is an exact input.
+interface ITessera {
+    function tesseraSwapViewAmounts(address tokenIn, address tokenOut, int256 amountSpecified)
+        external
+        view
+        returns (uint256 amountIn, uint256 amountOut);
+    function tesseraSwapWithAllowances(
+        address tokenIn,
+        address tokenOut,
+        int256 amountSpecified,
+        uint256 amountCheck,
+        address recipient,
+        bytes calldata swapData
+    ) external;
+}
+
 using SafeTransferLib for address;
 
-// Minimal stableswap adapter for the two Curve-style kinds on BNB Chain: CURVE (int128
-// exchange) and PancakeStableSwap (uint256 exchange), each a 2-coin pool holding exactly
-// the pair's two tokens. Both are pre-funded via allowance, with no output-first (flash)
-// mode, so such a pool can only ever be a SINK here, never the driven pool: VanHelsing is
-// fundless and the driven pool must hand over its output first. See V2Lib and V3Lib for
-// the flash-capable protocols.
+// Minimal adapter for the venues a ward can only sink into: the two Curve-style kinds on BNB
+// Chain, CURVE (int128 exchange) and PancakeStableSwap (uint256 exchange), each a 2-coin pool
+// holding exactly the pair's two tokens, and the market makers of Robinhood Chain, Rialto
+// (RIALTO) and Tessera (TESSERA). All are pre-funded via allowance, with no output-first (flash)
+// mode, so such a venue can only ever be a SINK here, never the driven pool: VanHelsing is
+// fundless and the driven pool must hand over its output first. See V2Lib and V3Lib for the
+// flash-capable protocols.
+//
+// A market maker is priced by an oracle and pays out of an inventory it keeps apart: a Rialto
+// market's vault, which the venue's markets share (traderVault), or Tessera's one treasury,
+// behind one entry that prices every pair. A Rialto quote is a step function of size, a
+// half-spread chosen by the trade's size and charged on the whole trade, so a bigger input can
+// buy less. A market is priced here by its own quotes, never by a copy of its formula, and a
+// restore into it is capped at the size it was quoted at (marketPrice, depth).
 //
 // price(), depth() and sink() are PUBLIC, so this library is deployed separately and
 // linked: VanHelsing delegatecalls it rather than inlining its bytecode. Only a ward with a
@@ -37,6 +75,11 @@ using SafeTransferLib for address;
 // the pool can pay over the restore's price range, which is known there.
 library CurveLib {
     uint8 internal constant KIND_CURVE = 5;
+    uint8 internal constant KIND_RIALTO = 11;
+    uint8 internal constant KIND_TESSERA = 25;
+
+    // A market's reference size, per input token: a thousandth of what its vault holds of it.
+    uint256 private constant MARKET_SHARE = 1000;
 
     // The balances of (t0, the pair's other token), mapped through coins(0): the tests' view
     // of _book, which the library's own reads go through.
@@ -104,7 +147,12 @@ library CurveLib {
     // instead keeps the sign of "bind hard" without the inversion: a 1-wei L reads
     // as a near-zero-capacity sink, so the sized drive rounds to ~0 and the ward
     // dies cleanly at NO_ARB or BELOW_FLOOR rather than overshooting.
-    function depth(uint8 kind, address pool, address t0, uint160 sOwn, uint160 sOther) public view returns (uint256 l) {
+    function depth(uint8 kind, address pool, address t0, address t1, uint160 sOwn, uint160 sOther)
+        public
+        view
+        returns (uint256 l)
+    {
+        if (kind == KIND_RIALTO || kind == KIND_TESSERA) return _marketDepth(kind, pool, t0, t1, sOwn, sOther);
         (uint256 b0, uint256 b1, uint256 i) = _book(pool, t0);
         l = _depth(kind, pool, i, 1 - i, b0 / 100, sOwn);
         if (l == 0) l = FixedPointMathLib.sqrt(b0 * b1);
@@ -144,7 +192,20 @@ library CurveLib {
     // Pre-funded: approve, then exchange. min_dy is 0: the fundless round trip
     // reverts on the repay if the output is short, which is the real slippage guard.
     // `kind` selects the exchange signature (CURVE int128 vs PancakeStableSwap uint256).
-    function sink(uint8 kind, address pool, address tokenIn, uint256 amountIn) public {
+    function sink(uint8 kind, address pool, address tokenIn, address tokenOut, uint256 amountIn) public {
+        if (kind == KIND_RIALTO || kind == KIND_TESSERA) {
+            // The market pulls the input with an allowance scoped to this swap, closed after: the
+            // markets are upgradeable proxies, and an allowance left standing would be a standing
+            // claim on whatever VanHelsing ever holds.
+            tokenIn.safeApproveWithRetry(pool, amountIn);
+            if (kind == KIND_RIALTO) {
+                IRialtoMarket(pool).swapExactIn(IRialtoMarket(pool).token0() == tokenIn, amountIn, 0, address(this), 0);
+            } else {
+                ITessera(pool).tesseraSwapWithAllowances(tokenIn, tokenOut, int256(amountIn), 1, address(this), "");
+            }
+            tokenIn.safeApprove(pool, 0);
+            return;
+        }
         uint256 i;
         uint256 j;
         if (ICurvePool(pool).coins(0) == tokenIn) {
@@ -158,5 +219,87 @@ library CurveLib {
         } else {
             IStableSwapPool(pool).exchange(i, j, amountIn, 0);
         }
+    }
+
+    // A market's leg: its bid, from selling the reference size of t0, and its ask, from buying t0
+    // with the reference size of t1, both from the market's own quotes, so the spread and any
+    // charge it adds for recent flow are its own. The mid is their geometric mean, and
+    // sqrt(bid / ask) the fee multiplier fn / fd that turns the mid back into the bid on a sale and
+    // the ask on a purchase. A Rialto half-spread only steps up with size, so these are the worst
+    // prices of any trade up to the reference size, which depth() caps a restore at. A market that
+    // refuses to quote is no anchor.
+    function marketPrice(uint8 kind, address venue, address t0, address t1)
+        public
+        view
+        returns (uint160 s, uint256 fn, uint256 fd)
+    {
+        (uint256 q0, uint256 q1,,) = _stock(kind, venue, t0, t1);
+        uint256 out1 = _quote(kind, venue, t0, t1, q0);
+        uint256 out0 = _quote(kind, venue, t1, t0, q1);
+        require(out1 != 0 && out0 != 0, "REFUSED");
+        uint256 sBid = FixedPointMathLib.sqrt(FixedPointMathLib.fullMulDiv(out1, 1 << 192, q0));
+        uint256 sAsk = FixedPointMathLib.sqrt(FixedPointMathLib.fullMulDiv(q1, 1 << 192, out0));
+        uint256 mid = FixedPointMathLib.sqrt(sBid) * FixedPointMathLib.sqrt(sAsk);
+        s = mid > type(uint160).max ? type(uint160).max : uint160(mid);
+        fd = 1e10;
+        fn = sBid >= sAsk ? fd : FixedPointMathLib.fullMulDiv(sBid, fd, sAsk);
+    }
+
+    // A market's depth for a restore that moves its price from sOwn toward sOther. Its quote is flat
+    // up to the reference size, so it has no depth of its own to fit, only two caps: the restore
+    // takes no more input than the reference size it was priced at, and pays out no more than half
+    // what its inventory holds of the output, as for a stableswap. A rising price takes t1 in and
+    // pays t0 out, a falling one the reverse.
+    function _marketDepth(uint8 kind, address venue, address t0, address t1, uint160 sOwn, uint160 sOther)
+        private
+        view
+        returns (uint256 l)
+    {
+        if (sOwn == sOther) return 1; // nothing to restore: the meeting no-ops
+        (uint256 q0, uint256 q1, uint256 b0, uint256 b1) = _stock(kind, venue, t0, t1);
+        uint256 inCap;
+        uint256 outCap;
+        if (sOther > sOwn) {
+            uint256 span = uint256(sOther) - sOwn;
+            inCap = FixedPointMathLib.fullMulDiv(q1, 1 << 96, span);
+            outCap = FixedPointMathLib.fullMulDiv(b0 / 2, FixedPointMathLib.fullMulDiv(sOther, sOwn, 1 << 96), span);
+        } else {
+            uint256 span = uint256(sOwn) - sOther;
+            inCap = FixedPointMathLib.fullMulDiv(q0, FixedPointMathLib.fullMulDiv(sOwn, sOther, 1 << 96), span);
+            outCap = FixedPointMathLib.fullMulDiv(b1 / 2, 1 << 96, span);
+        }
+        l = inCap < outCap ? inCap : outCap;
+        if (l == 0) l = 1; // a zero would read as an infinitely deep sink (see depth)
+    }
+
+    // What a market would pay of tokenOut for exactly amountIn of tokenIn, by its own quote, or zero
+    // when it refuses: a Rialto market answers zero itself; Tessera's entry answers for another
+    // input than the one asked, and does not count its treasury, so its quote past what the
+    // treasury holds is a refusal here.
+    function _quote(uint8 kind, address venue, address tokenIn, address tokenOut, uint256 amountIn)
+        private
+        view
+        returns (uint256)
+    {
+        if (amountIn == 0) return 0;
+        if (kind == KIND_RIALTO) {
+            return IRialtoMarket(venue).getAmountOut(IRialtoMarket(venue).token0() == tokenIn, amountIn);
+        }
+        (uint256 quotedIn, uint256 quotedOut) = ITessera(venue).tesseraSwapViewAmounts(tokenIn, tokenOut, int256(amountIn));
+        if (quotedIn != amountIn || quotedOut > SafeTransferLib.balanceOf(tokenOut, Chain.TESSERA_TREASURY)) return 0;
+        return quotedOut;
+    }
+
+    // A market's reference size and inventory of each token of the pair: what its vault (Rialto) or
+    // treasury (Tessera) holds of it, and a thousandth of that.
+    function _stock(uint8 kind, address venue, address t0, address t1)
+        private
+        view
+        returns (uint256 q0, uint256 q1, uint256 b0, uint256 b1)
+    {
+        address inventory = kind == KIND_RIALTO ? IRialtoMarket(venue).traderVault() : Chain.TESSERA_TREASURY;
+        b0 = SafeTransferLib.balanceOf(t0, inventory);
+        b1 = SafeTransferLib.balanceOf(t1, inventory);
+        (q0, q1) = (b0 / MARKET_SHARE, b1 / MARKET_SHARE);
     }
 }

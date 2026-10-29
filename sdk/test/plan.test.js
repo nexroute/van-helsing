@@ -632,7 +632,7 @@ test("planWards: the wards before and after share maxPremium, the wards before f
 });
 
 test("planWards: needs a client, a chain or a chainId", async () => {
-    await assert.rejects(planWards(swap(), { vanHelsing: VH }), /planWards: pass a client, a chain \(bsc or ethereum\) or a chainId \(56 or 1\)/);
+    await assert.rejects(planWards(swap(), { vanHelsing: VH }), /planWards: pass a client, a chain \(bsc, ethereum or robinhood\) or a chainId \(56, 1 or 4663\)/);
     await assert.rejects(planWards(swap(), { vanHelsing: VH, chain: "bsc", chainId: 1 }), /planWards: chain bsc is not chainId 1/);
 });
 

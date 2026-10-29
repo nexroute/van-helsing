@@ -66,6 +66,8 @@ It prices each chain's hub tokens, each with its own decimals on that chain:
   Chainlink BNB/USD feed; ETH through Chainlink's ETH/USD feed.
 - Ethereum: WETH one for one; USDC and USDT (6 decimals), DAI, USD1 and FDUSD at a dollar
   through the Chainlink ETH/USD feed.
+- Robinhood Chain: WETH one for one; USDG (6 decimals) at a dollar through the Chainlink ETH/USD
+  feed.
 
 The feeds are read in the same simulation as the wards. Pass `value` to price anything else.
 
@@ -75,14 +77,14 @@ whatever the policy.
 Each ward restores its pool against its anchor, the most liquid other pool of its pair: the
 contract always takes that pool, so there is nothing to choose. Every simulation of one
 `planWards` call builds on the same block, and simulates the
-block after it, stamped as the chain stamps its next one: a second later on BNB Chain, which
-makes a block every 0.45 s, and 12 s later on Ethereum. A node left to itself stamps it 12 s
-later on every chain, and on BNB Chain a swap whose deadline or quote runs out sooner would
-revert there.
+block after it, stamped as the chain stamps its next one: a second later on BNB Chain and
+Robinhood Chain, which make a block every 0.45 s and 0.1 s, and 12 s later on Ethereum. A node
+left to itself stamps it 12 s later on every chain, and on BNB Chain or Robinhood Chain a swap
+whose deadline or quote runs out sooner would revert there.
 
 | Option | Default | |
 |---|---|---|
-| `client`, `chain` or `chainId` | one is required | a viem client whose RPC serves `eth_simulateV1`, or `"bsc"` or `"ethereum"`, or chain id `56` or `1`, for that chain's default client |
+| `client`, `chain` or `chainId` | one is required | a viem client whose RPC serves `eth_simulateV1`, or `"bsc"`, `"ethereum"` or `"robinhood"`, or chain id `56`, `1` or `4663`, for that chain's default client |
 | `before` | `"affordable"` | the wards before the swap: `"affordable"` (those that are profitable, and the rest as insurance while within `maxPremium`), `"profitable"` (only those that capture a standing gap worth more than their gas), `"always"` or `"never"` |
 | `after` | `"affordable"` | the wards after the swap: `"affordable"` (those that are profitable, and the rest while within what `maxPremium` leaves), `"profitable"` (only those worth more than their gas), `"always"` or `"never"` |
 | `maxPremium` | `0.005` | the most the wards that may capture nothing may cost, before and after together, as a share of what the swap is worth |
@@ -187,7 +189,8 @@ in one transaction. The atomicity is on-chain. In the public mempool, each ward 
 undoes a front-run on its pool. A token with a single pool gets no ward, so send its swap as a
 private bundle (Option B). This delegates once to
 `Simple7702Account`, eth-infinitism's EIP-7702 account and viem's default, at the same address
-with the same code on BNB Chain and Ethereum, which runs calls only for the account itself.
+with the same code on BNB Chain, Ethereum and Robinhood Chain, which runs calls only for the
+account itself.
 
 ```js
 const SIMPLE_7702 = "0xe6Cae83BdE06E4c305530e199D7217f42808555B";
@@ -255,6 +258,7 @@ client whose RPC serves `eth_simulateV1` with state overrides and traced transfe
 |---|---|---|
 | `"bsc"` | `56` | `https://bsc-dataseed.bnbchain.org`, BNB Chain's own |
 | `"ethereum"` | `1` | `https://ethereum-rpc.publicnode.com` |
+| `"robinhood"` | `4663` | `https://rpc.mainnet.chain.robinhood.com`, Robinhood Chain's own |
 
 A client on another chain than the `chain` or `chainId` passed with it is an error, and so are a
 `chain` and a `chainId` that disagree. A public RPC sees the unsigned swap before it is sent and

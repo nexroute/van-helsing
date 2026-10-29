@@ -11,6 +11,7 @@ import { ModifyLiquidityParams, SwapParams } from "@uniswap/v4-core/src/types/Po
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
 import { V4Config } from "../libraries/V4Config.sol";
+import { Chain } from "../libraries/Chain.sol";
 
 // A minimal Uniswap V4 router for the fork tests: adds liquidity to and swaps exact-in through any
 // pool, hooks included, paying from and taking to its own balances (fund it first).
@@ -18,7 +19,7 @@ contract V4PoolHelper {
     using PoolIdLibrary for PoolKey;
     using SafeTransferLib for address;
 
-    IPoolManager internal constant PM = IPoolManager(0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF);
+    IPoolManager internal constant PM = IPoolManager(Chain.UNI_V4_POOL_MANAGER);
 
     function addLiquidity(PoolKey calldata key, int24 tickLower, int24 tickUpper, int256 liquidity) external {
         PM.unlock(abi.encode(false, key, abi.encode(tickLower, tickUpper, liquidity)));

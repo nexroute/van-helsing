@@ -12,6 +12,7 @@ import { V4Depth } from "./V4Depth.sol";
 import { V4Config } from "./V4Config.sol";
 import { UniV4Lib } from "./UniV4Lib.sol";
 import { InfinityLib } from "./InfinityLib.sol";
+import { Chain } from "./Chain.sol";
 
 interface IPoolTokens {
     function token0() external view returns (address);
@@ -53,6 +54,7 @@ struct Cx {
 library RouteLib {
     uint8 private constant V2 = 0;
     uint8 private constant V3 = 2;
+    uint8 private constant ALGEBRA = 3;
     uint8 private constant UNIV4 = 4;
     uint8 private constant INFI = 6;
     uint256 private constant Q96 = 1 << 96;
@@ -254,6 +256,12 @@ library RouteLib {
         }
 
         HopVR memory v = _hopVR(reg, hopId, hk, near, w);
+        // an Algebra hop pays the larger of its entry's fee and the one its plugin last set, as a
+        // direct leg does (read again here, so that no other hop carries it)
+        if (Chain.ALGEBRA != 0 && hk == ALGEBRA) {
+            (, uint256 live) = V3Lib.algebraState(_addr(hopId));
+            if (1e6 - live < r.fn) (r.fn, r.fd) = (1e6 - live, 1e6);
+        }
         (r.near, r.far) = near == v.tok0 ? (v.r0, v.r1) : (v.r1, v.r0);
         // sanity: the hop must connect exactly {near, far}
         require((near == v.tok0 && far == v.tok1) || (near == v.tok1 && far == v.tok0), "ROUTE_MISWIRE");
@@ -279,20 +287,25 @@ library RouteLib {
             address pool = _addr(hopId);
             (v.r0, v.r1) = V2Lib.getReserves(pool);
             (v.tok0, v.tok1) = (IPoolTokens(pool).token0(), IPoolTokens(pool).token1());
-        } else if (hk == V3) {
+        } else if (hk == V3 || (Chain.ALGEBRA != 0 && hk == ALGEBRA)) {
             address pool = _addr(hopId);
-            uint160 sp = V3Lib.price(pool);
+            uint160 sp;
+            if (Chain.ALGEBRA == 0 || hk == V3) sp = V3Lib.price(pool);
+            else (sp,) = V3Lib.algebraState(pool);
             (v.tok0, v.tok1) = (IPoolTokens(pool).token0(), IPoolTokens(pool).token1());
             uint256 lq = V3Lib.liquidity(pool);
             // per-hop target: the hop's own spot scaled by the FULL composite move magnitude,
             // applied in the hop's direction (toMax up, else down). Each hop moves less than the
             // composite (the composite ratio is the product of the two), so the walk covers more
             // than the hop's real range: like a direct sink's pass-1 read, it can count liquidity
-            // the restore never reaches, and a route gets no second pass.
+            // the restore never reaches, and a route gets no second pass. A route is always a sink,
+            // so its hops walk dry: past a hop's last liquidity the way counts at zero.
             if (w.maxTicks > 0) {
                 bool toMax = (near == v.tok0) ? w.up : !w.up;
                 uint160 tgt = _hopTarget(sp, w.defSqrtP, w.sSpot, toMax);
-                (lq,) = V3Depth.effectiveLiquidity(pool, tgt, w.maxTicks);
+                (lq,) = Chain.ALGEBRA == 0 || hk == V3
+                    ? V3Depth.effectiveLiquidity(pool, tgt, w.maxTicks, true)
+                    : V3Depth.effectiveLiquidityList(pool, tgt, w.maxTicks, true);
             }
             (v.r0, v.r1) = _vr(sp, lq);
         } else if (hk == UNIV4 || hk == INFI) {
@@ -304,7 +317,7 @@ library RouteLib {
             if (w.maxTicks > 0) {
                 bool toMax = (near == v.tok0) ? w.up : !w.up;
                 uint160 tgt = _hopTarget(sp, w.defSqrtP, w.sSpot, toMax);
-                (lq,) = V4Depth.effectiveLiquidity(hk, hopId, V4Config.tickSpacing(cfg), !V4Config.aligned(cfg), tgt, w.maxTicks);
+                (lq,) = V4Depth.effectiveLiquidity(hk, hopId, V4Config.tickSpacing(cfg), !V4Config.aligned(cfg), tgt, w.maxTicks, true);
             }
             (v.r0, v.r1) = _vr(sp, lq);
         } else {
@@ -333,7 +346,7 @@ library RouteLib {
     }
 
     function _feeMul(uint8 kind, uint32 fee) private pure returns (uint256 num, uint256 den) {
-        den = (kind == V3 || kind == UNIV4 || kind == INFI) ? 1e6 : 1e4;
+        den = (kind >> Chain.ALGEBRA == V3 >> Chain.ALGEBRA || kind == UNIV4 || kind == INFI) ? 1e6 : 1e4;
         num = den - fee;
     }
 

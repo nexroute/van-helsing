@@ -2,8 +2,11 @@
 
 pragma solidity ^0.8.27;
 
-// Minimal WBNB interface for wrapping/unwrapping native BNB at the take/settle boundary.
-interface IWBNB {
+import { Chain } from "./Chain.sol";
+
+// The wrapped native currency's interface (Chain.WRAPPED_NATIVE), for wrapping and unwrapping
+// the native currency at the take/settle boundary.
+interface IWrappedNative {
     function deposit() external payable;
     function withdraw(uint256) external;
 }
@@ -22,10 +25,11 @@ interface IWBNB {
 //
 // A `bytes memory` value's data starts at add(cfg, 32), so field at packed offset O is
 // mload(add(cfg, 32 + O)) shifted down to its width. Also home to what both singleton
-// adapters share: WBNB, the sqrt bounds (Uniswap's and Pancake's TickMath bounds are
-// identical), price inversion, alignment, and where each manager keeps its pools.
+// adapters share: the wrapped native currency, the sqrt bounds (Uniswap's and Pancake's
+// TickMath bounds are identical), price inversion, alignment, and where each manager keeps
+// its pools.
 library V4Config {
-    address internal constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address internal constant WRAPPED_NATIVE = Chain.WRAPPED_NATIVE;
 
     // TickMath sqrt-ratio bounds, the extreme swap limits for a sink (a drive uses the
     // meeting-price target instead).
@@ -92,10 +96,10 @@ library V4Config {
     }
 
     // Whether the pool's currency order matches the ERC20 token order VanHelsing works in.
-    // A native currency (address(0)) is always currency0, but a pair keys it as WBNB, which
-    // sorts after any token with a lower address: such a pool is flipped, its sqrtPrice the
-    // inverse of the pair's t1/t0 price and its swap directions reversed. All-ERC20 pools
-    // are aligned. Computed from the two currencies alone.
+    // A native currency (address(0)) is always currency0, but a pair keys it as the wrapped
+    // native currency, which sorts after any token with a lower address: such a pool is
+    // flipped, its sqrtPrice the inverse of the pair's t1/t0 price and its swap directions
+    // reversed. All-ERC20 pools are aligned. Computed from the two currencies alone.
     function aligned(bytes memory cfg) internal pure returns (bool) {
         return erc20(currency0(cfg)) < erc20(currency1(cfg));
     }
@@ -111,10 +115,10 @@ library V4Config {
         return uint160(inv);
     }
 
-    // The ERC20 equivalent of a pool currency: native (address(0)) maps to WBNB, every
-    // other currency is itself. Lets a caller compare a singleton pool's currencies
+    // The ERC20 equivalent of a pool currency: native (address(0)) maps to the wrapped native
+    // currency, every other currency is itself. Lets a caller compare a singleton pool's currencies
     // against ERC20 pair tokens.
     function erc20(address c) internal pure returns (address) {
-        return c == address(0) ? WBNB : c;
+        return c == address(0) ? WRAPPED_NATIVE : c;
     }
 }

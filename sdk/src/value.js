@@ -36,6 +36,14 @@ export const CHAINS = {
         },
         feeds: {},
     },
+    4663: {
+        wrapped: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", // WETH
+        usdFeed: "0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", // Chainlink ETH / USD, 8 decimals
+        stables: {
+            "0x5fc5360d0400a0fd4f2af552add042d716f1d168": 6, // USDG
+        },
+        feeds: {},
+    },
 };
 
 const FEED_ABI = [

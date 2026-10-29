@@ -35,6 +35,19 @@ library V3Lib {
         }
     }
 
+    // An Algebra Integral pool's sqrtPriceX96 and the fee its plugin last set, in millionths: the
+    // first and third words globalState() returns (it has no slot0). Reverts as price does.
+    function algebraState(address pool) internal view returns (uint160 s, uint256 fee) {
+        assembly ("memory-safe") {
+            mstore(0, 0xe76c01e4) // globalState()
+            if iszero(and(gt(returndatasize(), 0x5f), staticcall(gas(), pool, 0x1c, 0x04, 0, 0x20))) { revert(0, 0) }
+            s := mload(0)
+            if shr(160, s) { revert(0, 0) }
+            returndatacopy(0, 0x40, 0x20)
+            fee := and(mload(0), 0xffff)
+        }
+    }
+
     function liquidity(address pool) internal view returns (uint128) {
         return IUniV3Pool(pool).liquidity();
     }
@@ -46,10 +59,14 @@ library V3Lib {
         IUniV3Pool(pool).swap(address(this), zeroForOne, type(int256).max / 2, target, data);
     }
 
-    // Sink into `pool` at the extreme limit: exact-in (amount > 0, spend all) or
-    // exact-out (amount < 0, buy exactly). The pool sends output and calls back.
-    function sink(address pool, bool zeroForOne, int256 amount, bytes memory data) internal {
-        IUniV3Pool(pool).swap(address(this), zeroForOne, amount, zeroForOne ? MIN_SQRT : MAX_SQRT, data);
+    // Sink into `pool` at the price `limit` (0: the extreme limit): exact-in (amount > 0, spend
+    // all) or exact-out (amount < 0, buy exactly). The pool sends output and calls back. An
+    // exact-in sale the pool stops short, at the limit or past its last liquidity, fails: what it
+    // did not take would stay here.
+    function sink(address pool, bool zeroForOne, int256 amount, uint160 limit, bytes memory data) internal {
+        if (limit == 0) limit = zeroForOne ? MIN_SQRT : MAX_SQRT;
+        (int256 a0, int256 a1) = IUniV3Pool(pool).swap(address(this), zeroForOne, amount, limit, data);
+        if (amount > 0) require((zeroForOne ? a0 : a1) == amount, "SINK_SHORT");
     }
 
     // The input a swap callback must repay: the positive of the two token deltas.

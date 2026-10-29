@@ -53,8 +53,8 @@ const between = (r, from, to) => {
 // on a flipped pool, but for a target at the pool's own price: cur is then the token-space price,
 // which inverts back to the pool's own only up to rounding, so the record cannot vouch for the
 // direction and the second walk is walked.
-async function check(harness, args, cur, t1, t2, maxTicks, nearer, label, flipped = false) {
-    const [walked, fromRecord, covered] = await harness.replayed(...args, t1, t2, maxTicks);
+async function check(harness, args, cur, t1, t2, maxTicks, nearer, label, flipped = false, method = "replayed") {
+    const [walked, fromRecord, covered] = await harness[method](...args, t1, t2, maxTicks);
     if (covered) expect(fromRecord).to.equal(walked, `${label}: replayed ${fromRecord}, walked ${walked}`);
     if (nearer && maxTicks <= 8n && t1 !== cur && !(flipped && t2 === cur)) {
         expect(covered).to.equal(true, `${label}: not covered`);
@@ -70,9 +70,10 @@ describe("DepthRecord: the second walk replayed from the first", function () {
         harness = await deploy(conn, "V3DepthHarness", null, [], { libraries: { V3Depth: null } });
     });
 
-    it("gives what a V3 walk gives, on random tick layouts and targets", async function () {
+    for (const [name, method, seed] of [["walk", "replayed", 20261026], ["dry walk", "replayedDry", 20261028]])
+    it(`gives what a V3 ${name} gives, on random tick layouts and targets`, async function () {
         this.timeout(600_000);
-        const r = rng(20261026);
+        const r = rng(seed);
         let checked = 0, covered = 0;
         for (let layout = 0; layout < 12; layout++) {
             const spacing = r.pick([1, 10, 60, 200]);
@@ -96,7 +97,7 @@ describe("DepthRecord: the second walk replayed from the first", function () {
                 const kind = r.int(0, 5);
                 // nearer (most), beyond the first target, or the other way
                 const t2 = kind < 4 ? between(r, cur, t1) : kind === 4 ? sqrtAt(tick + (up ? 2 : -2) * far * spacing) : sqrtAt(tick + (up ? -far : far) * spacing);
-                if (await check(harness, [await pool.getAddress()], cur, t1, t2, maxTicks, kind < 4, `layout ${layout} pair ${pair}`)) covered++;
+                if (await check(harness, [await pool.getAddress()], cur, t1, t2, maxTicks, kind < 4, `layout ${layout} pair ${pair}`, false, method)) covered++;
                 checked++;
             }
         }

@@ -63,7 +63,7 @@ test("simulate takes a chain slug for that chain's default client, and needs a c
     } finally {
         bsc.request = request;
     }
-    await assert.rejects(() => simulate({ to: "0xr", data: "0x" }, {}), /simulate: pass a client, a chain \(bsc or ethereum\) or a chainId \(56 or 1\)/);
+    await assert.rejects(() => simulate({ to: "0xr", data: "0x" }, {}), /simulate: pass a client, a chain \(bsc, ethereum or robinhood\) or a chainId \(56, 1 or 4663\)/);
     await assert.rejects(() => simulate({ to: "0xr", data: "0x" }, { chain: "solana" }), /no default client for chain "solana"/);
 });
 

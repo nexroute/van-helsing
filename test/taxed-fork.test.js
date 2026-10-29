@@ -72,14 +72,16 @@ const CASES = [
         alt: { kind: 6, fee: 67, custody: VAULT, meta: [6, NO_HOOKS, USDT, 67, 1, NO_HOOKS, PARAMS_TS1] },
     },
     {
-        // Chaos refuses transfers a contract makes (they revert TransferFailed), so no
-        // one can arb it from a contract: the ward has to no-op cleanly.
+        // The 1% Infinity pool holds next to nothing of the way the ward pushes it. Sized as if
+        // it were deep, a ward drove 1,228 Chaos into it for 0.0000268 USDT and could not repay
+        // its drive (TransferFailed), which once read as Chaos refusing a contract's transfers;
+        // it takes them. Sized to what the pool holds, the ward captures the dust it holds.
         name: "Chaos/USDT, V2 pair against a 1% Infinity pool",
         taxed: "0x19F46FDDbaC1ab00D203Cc80515a44E320260419", // Chaos, token0
         base: USDT,
         v2: "0x16f06339447daa1b742934e7f44c2cc018f07513",
         v2Fee: 25,
-        refuses: true,
+        dust: true,
         // PoolKey fee 10000, tick spacing 200 (parameters 0xc80000), no hook.
         alt: {
             kind: 6, fee: 10000, custody: VAULT,
@@ -195,7 +197,7 @@ describeFork("VanHelsing on real taxed tokens (fork)", function () {
 
     for (const c of CASES) {
         for (const dir of ["cheap", "dear"]) {
-            it(`${c.name}: taxed token ${dir} at the pair, ${c.refuses ? "no-ops" : "captures with the taxes"}`, async function () {
+            it(`${c.name}: taxed token ${dir} at the pair, ${c.dust ? "captures the dust the pool holds" : "captures with the taxes"}`, async function () {
                 const snap = await helpers.takeSnapshot();
                 try {
                     // cheap: base pulled out of the pair, so the pair sells the taxed
@@ -213,8 +215,8 @@ describeFork("VanHelsing on real taxed tokens (fork)", function () {
                         expect(r.got + r.gotT > 0n, "captured nothing").to.equal(true);
                         return;
                     }
-                    if (c.refuses) {
-                        expect(r.got).to.equal(0n);
+                    if (c.dust) {
+                        expect(r.got > 0n, "captured nothing").to.equal(true);
                         return;
                     }
                     expect(r.got > 0n, "captured nothing").to.equal(true);

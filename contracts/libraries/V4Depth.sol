@@ -24,12 +24,14 @@ library V4Depth {
     // The pool `id` of `kind` (Uniswap V4 or Pancake Infinity), whose ticks are `spacing` apart
     // and which is `flipped` when its currency order is the reverse of its pair's tokens. Also
     // returns the walk's record, as V3Depth does.
-    function effectiveLiquidity(uint8 kind, bytes32 id, int24 spacing, bool flipped, uint160 targetSqrtP, uint256 maxTicks)
+    // `dry` is for a route's hop, as V3Depth has it, and a walk that runs dry keeps where.
+    function effectiveLiquidity(uint8 kind, bytes32 id, int24 spacing, bool flipped, uint160 targetSqrtP, uint256 maxTicks, bool dry)
         public
         view
         returns (uint128, bytes memory)
     {
         Acc memory a = _pool(kind, id);
+        (a.dry, a.flipped) = (dry, flipped);
         uint160 curSqrt = _slot0(a); // a.pos: the pool's tick, until _begin compresses it
         a.liq = _liquidity(a);
         // The walk runs in the pool's currency space (the ticks and slot0 it reads).
@@ -37,9 +39,10 @@ library V4Depth {
         // (native) pool; liquidity is orientation-independent.
         if (flipped) targetSqrtP = V4Config.invertSqrt(targetSqrtP);
         if (maxTicks == 0 || targetSqrtP == curSqrt) return (a.liq, a.rec);
+        (a.cur, a.target) = (curSqrt, targetSqrtP);
 
         bool up = targetSqrtP > curSqrt; // restore raises this pool's price
-        int24 targetComp = _begin(a, (up ? DepthRecord.UP : 0) | (flipped ? DepthRecord.FLIPPED : 0), curSqrt, spacing, targetSqrtP);
+        int24 targetComp = _begin(a, (up ? DepthRecord.UP : 0) | (flipped ? DepthRecord.FLIPPED : 0) | (dry ? DepthRecord.DRY : 0), curSqrt, spacing, targetSqrtP);
         // A target in the price's own compressed tick: nothing the walk would read would count
         // (V3Depth).
         if (targetComp == a.pos) return (a.liq, a.rec);
@@ -50,6 +53,20 @@ library V4Depth {
     // the same state (DepthRecord.replay); false when the record does not cover it.
     function replay(bytes calldata record, uint160 targetSqrtP) public pure returns (uint128, bool) {
         return DepthRecord.replay(record, targetSqrtP);
+    }
+
+    // Where the pool a walk's record describes has traded `flow` wei of token1 (`one`) or token0
+    // along its way, from any concentrated pool's record (DepthRecord.priceAfter).
+    function priceAfter(bytes calldata record, uint256 flow, bool one) public pure returns (uint160, bool) {
+        return DepthRecord.priceAfter(record, flow, one);
+    }
+
+    // What the pool a walk's record describes trades of token1 (`one`) or token0 from its price to
+    // where its walk ran dry, from any concentrated pool's record (DepthRecord.tradedToCliff). Its
+    // selector sorts after effectiveLiquidity's, which every V4 and Infinity walk calls, so the
+    // dispatcher matches that one as early as before.
+    function tradedToCliff(bytes calldata record, bool one) public pure returns (uint256) {
+        return DepthRecord.tradedToCliff(record, one);
     }
 
     // Where the walk starts: the pool's tick and the target, compressed to spacing units, floored
@@ -83,6 +100,12 @@ library V4Depth {
         uint256 bits;
         bytes rec; // the walk's record (DepthRecord), none until it starts
         uint256 n; // the steps it took
+        bool dry; // a route hop's walk: its depth at a cliff is DepthRecord.dryDepth
+        bool flipped; // its currency order is the reverse of its pair's tokens
+        bool dried; // it ran dry, its depth in dryL
+        uint128 dryL;
+        uint160 cur; // the price it walks from and the one it walks toward, in currency space
+        uint160 target;
     }
 
     // The pool's manager and its state's slot there, worked out once: every read starts from them.
@@ -104,9 +127,41 @@ library V4Depth {
             unchecked { ++i; }
         }
         DepthRecord.finish(a.rec, a.n, i == maxTicks);
+        // As V3Depth._walk: liquidity that comes back before the target, within the rest of the
+        // gap's bitmap word or the next, is no cliff, whatever step the walk ran dry on.
+        if (!a.dry && DepthRecord.cliffOf(a.rec) != 0 && _resumes(a, up, targetComp, 2)) {
+            DepthRecord.noteCliff(a.rec, 0);
+        }
+        if (a.dried) return a.dryL;
         if (a.tSum == 0) return spot;
         uint256 mean = a.wSum / a.tSum;
         return mean > type(uint128).max ? type(uint128).max : uint128(mean);
+    }
+
+    // Whether an initialized tick lies past the boundary that left no liquidity (a.pos) and before
+    // the target, within `budget` more steps (V3Depth._resumes).
+    function _resumes(Acc memory a, bool up, int24 targetComp, uint256 budget) private view returns (bool) {
+        unchecked {
+            int24 pos = a.pos;
+            for (uint256 k; k < budget; ++k) {
+                (int24 b, bool init) = _nextInitialized(a, pos, up);
+                if (up ? b > targetComp : b <= targetComp) return false;
+                if (init) return true;
+                pos = up ? b : b - 1;
+            }
+            return false;
+        }
+    }
+
+    // A walk's end at compressed tick b, where crossing left no liquidity (V3Depth._ranDry): the
+    // record keeps where, in token space, and a dry walk's depth is what the stretch before holds
+    // of the way, in the pool's own space.
+    function _ranDry(Acc memory a, bool up, int24 b, int24 spacing, uint128 before) private pure {
+        (uint160 edge, uint160 cliff) = DepthRecord.edgeAt(b, spacing, a.flipped);
+        DepthRecord.noteCliff(a.rec, cliff);
+        if (!a.dry) return;
+        a.dried = true;
+        a.dryL = DepthRecord.dryDepth(a.tSum == 0 ? before : a.wSum / a.tSum, up, edge, a.cur, a.target);
     }
 
     // Unchecked as V3Depth's walk is. The spacing a tick read multiplies is the registry's, from
@@ -128,13 +183,17 @@ library V4Depth {
                 _note(a, b, init);
                 return false; // reached the target
             }
+            uint128 before = a.liq;
             if (init) {
                 int128 net = _tickNet(a, int24(b * spacing));
                 a.liq = _applyDelta(a.liq, up ? net : -net);
             }
             _note(a, b, init);
-            if (init && a.liq == 0) return false;
             a.pos = up ? b : b - 1; // advance strictly past the boundary
+            if (init && a.liq == 0) {
+                _ranDry(a, up, b, spacing, before);
+                return false; // liquidity exhausted
+            }
             return true;
         }
     }

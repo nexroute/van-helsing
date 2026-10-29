@@ -2,14 +2,14 @@ import { resolveClient, secondsToNextBlock } from "./clients.js";
 
 // Simulate unsigned calls statelessly with eth_simulateV1, in one block, in order: each call
 // sees the state the previous ones left, on `client`, or on the default client of `chain` or
-// `chainId` ("bsc" or 56, "ethereum" or 1, see clients.js). A call is { from, to, data, value } as
-// viem takes it, or a transaction as the RPC returns it, its data in `input`, with the
-// authorizationList of a 7702 transaction. A call that names its gas limit and price runs with
-// them, its sender prepaying limit × price as on chain; one that names no price runs at 0 (planWards
-// prices every call it sends, see plan.js). Optional `overrides` (eth_simulateV1 stateOverrides)
-// let a not-yet-funded/approved swap still execute. `block` is the block to build on, a number or
-// a tag ("latest" by default), and `time` the simulated block's timestamp, in seconds: by default
-// the chain's next block (see nextBlock). `traceTransfers` also logs every native transfer, as a
+// `chainId` ("bsc" or 56, "ethereum" or 1, "robinhood" or 4663, see clients.js). A call is
+// { from, to, data, value } as viem takes it, or a transaction as the RPC returns it, its data
+// in `input`, with the authorizationList of a 7702 transaction. A call that names its gas limit
+// and price runs with them, its sender prepaying limit × price as on chain; one that names no
+// price runs at 0 (planWards prices every call it sends, see plan.js). Optional `overrides`
+// (eth_simulateV1 stateOverrides) let a not-yet-funded/approved swap still execute. `block` is
+// the block to build on, a number or a tag ("latest" by default), and `time` the simulated
+// block's timestamp, in seconds: by default the chain's next block (see nextBlock). `traceTransfers` also logs every native transfer, as a
 // Transfer from 0xEeee...EEeE. A reverting call yields whatever logs the node returns for it,
 // none on Geth and BNB Chain's node.
 export async function simulateCalls(calls, { client, chain, chainId, overrides, block = "latest", time, traceTransfers = false } = {}) {

@@ -24,7 +24,7 @@ interface IPoolRegistry {
     //
     // `shape` is what reading a singleton pool takes beyond its id: its tick spacing in the
     // low 24 bits (an int24), and in bit 24 whether its currency0 is the native currency, which
-    // a pair keys as WBNB. Zero for any other pool.
+    // a pair keys as the wrapped native currency. Zero for any other pool.
     struct Pool {
         bytes32 id;
         uint8 kind;

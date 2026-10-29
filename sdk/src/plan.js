@@ -49,8 +49,8 @@ const REGISTRY_CALL = encodeFunctionData({ abi: REGISTRY_ABI, functionName: "REG
 // registry does not list, or lists with no other pool of its pair to anchor it, captures
 // nothing, so it is left out whatever the policy, and the plan says why. Options:
 //   client      a viem client whose RPC serves eth_simulateV1, or
-//   chain       "bsc" or "ethereum", or chainId 56 or 1, for that chain's default client
-//               (clients.js): one of them is required.
+//   chain       "bsc", "ethereum" or "robinhood", or chainId 56, 1 or 4663, for that chain's
+//               default client (clients.js): one of them is required.
 //   before      "affordable" (default) | "profitable" | "always" | "never": the wards before.
 //   after       "affordable" (default) | "profitable" | "always" | "never": the wards after.
 //               "profitable" keeps a ward only when the payee's share of its bounty, less

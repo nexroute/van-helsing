@@ -3,6 +3,7 @@
 pragma solidity ^0.8.27;
 
 import { IPoolRegistry } from "./interfaces/IPoolRegistry.sol";
+import { Chain } from "./libraries/Chain.sol";
 
 // Operator-curated pool registry. The operator keeps, per token pair, a ranked list of pools
 // (most-liquid first) refreshed off-chain like an oracle, each entry stating its protocol
@@ -65,7 +66,7 @@ contract PoolRegistry is IPoolRegistry {
     mapping(bytes32 => uint256) internal poolKeys;
 
     // The ERC20 a native currency stands for in a pair.
-    address internal constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address internal constant WRAPPED_NATIVE = Chain.WRAPPED_NATIVE;
 
     event OwnerChanged(address indexed owner);
     event OperatorChanged(address indexed operator);
@@ -218,7 +219,7 @@ contract PoolRegistry is IPoolRegistry {
         if (w == 0) return poolConfig[id];
         (uint256 a, uint256 b) = _slots(id);
         (address t0, address t1) = (address(uint160(a)), address(uint160(b)));
-        (address c0, address c1) = uint8(w >> 208) & 1 != 0 ? (address(0), t0 == WBNB ? t1 : t0) : (t0, t1);
+        (address c0, address c1) = uint8(w >> 208) & 1 != 0 ? (address(0), t0 == WRAPPED_NATIVE ? t1 : t0) : (t0, t1);
         return abi.encodePacked(uint8(b >> 192), c0, c1, uint24(w >> 160), uint24(w >> 184), address(uint160(w)), bytes32(w >> 216));
     }
 

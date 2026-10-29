@@ -11,7 +11,8 @@ import { IUnlockCallback } from "@uniswap/v4-core/src/interfaces/callback/IUnloc
 import { SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { BalanceDelta } from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
-import { V4Config, IWBNB } from "./V4Config.sol";
+import { V4Config, IWrappedNative } from "./V4Config.sol";
+import { Chain } from "./Chain.sol";
 
 // Minimal Uniswap V4 adapter over the singleton PoolManager. A pool has no address of
 // its own: it lives inside the one PoolManager and is named by a poolId derived from its
@@ -20,13 +21,14 @@ import { V4Config, IWBNB } from "./V4Config.sol";
 // sink inside an unlock. The execution half (unlock, swapTo, settle and the rest) is public
 // so it links out of VanHelsing's bytecode; the reads (price, liquidity, from the manager's
 // storage by poolId, V4Config.load) stay internal, for RouteLib. See V4Config for the shared
-// alignment, price-inversion, WBNB and sqrt-bound helpers.
+// alignment, price-inversion, wrapped native and sqrt-bound helpers.
 library UniV4Lib {
     using PoolIdLibrary for PoolKey;
     using SafeTransferLib for address;
 
-    // Uniswap V4 PoolManager on BNB Chain (the one singleton for every Uniswap V4 pool).
-    IPoolManager internal constant POOL_MANAGER = IPoolManager(0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF);
+    // Uniswap V4's PoolManager on the chain the build is for (Chain.sol): the one singleton for
+    // every Uniswap V4 pool.
+    IPoolManager internal constant POOL_MANAGER = IPoolManager(Chain.UNI_V4_POOL_MANAGER);
 
     // The transient slot where the PoolManager keeps whether it is unlocked, which its exttload
     // reads: keccak256("Unlocked") - 1.
@@ -79,10 +81,10 @@ library UniV4Lib {
     }
 
     // Inside an unlock: swap per (amountSpecified, sqrtLimit) and receive the output to
-    // this contract (native wrapped to WBNB), returning the input debt and the output.
+    // this contract (native wrapped), returning the input debt and the output.
     // VanHelsing passes token-space direction/limit; translate to the pool's currency
     // space (a flipped pool reverses the direction and inverts the limit; amountSpecified
-    // is a token quantity, native maps 1:1 to WBNB, so it passes through).
+    // is a token quantity, native maps 1:1 to its wrapped token, so it passes through).
     function swapTo(bytes memory cfg, bool zeroForOne, int256 amountSpecified, uint160 sqrtLimit)
         public
         returns (uint256 debt, uint256 amountOut)
@@ -103,10 +105,10 @@ library UniV4Lib {
             amountOut = uint256(uint128(delta.amount0()));
         }
         POOL_MANAGER.take(cOut, address(this), amountOut);
-        if (cOut.isAddressZero()) IWBNB(V4Config.WBNB).deposit{value: amountOut}(); // wrap native output
+        if (cOut.isAddressZero()) IWrappedNative(V4Config.WRAPPED_NATIVE).deposit{value: amountOut}(); // wrap native output
     }
 
-    // Pay `debt` of the input currency to the manager (native unwrapped from WBNB) and
+    // Pay `debt` of the input currency to the manager (native unwrapped first) and
     // return what it credited: less than `debt` when the token takes a fee on transfer.
     function settle(bytes memory cfg, bool zeroForOne, uint256 debt) public returns (uint256 paid) {
         bool zfo = V4Config.aligned(cfg) ? zeroForOne : !zeroForOne; // token space -> currency space
@@ -114,7 +116,7 @@ library UniV4Lib {
         Currency cIn = zfo ? k.currency0 : k.currency1;
         POOL_MANAGER.sync(cIn);
         if (cIn.isAddressZero()) {
-            IWBNB(V4Config.WBNB).withdraw(debt);
+            IWrappedNative(V4Config.WRAPPED_NATIVE).withdraw(debt);
             return POOL_MANAGER.settle{value: debt}();
         }
         Currency.unwrap(cIn).safeTransfer(address(POOL_MANAGER), debt);
@@ -129,18 +131,15 @@ library UniV4Lib {
         require(settle(cfg, zeroForOne, debt) == debt, "SHORT_SETTLE");
     }
 
-    // Inside the lock: sell exactly `amount` of the input currency. Pay first and swap what
-    // the singleton credited, which is what a token taking a fee on transfer actually
-    // delivered (for any other token it is all of it), then take back whatever the pool
-    // could not use before the price limit, as settling only the swap's debt would.
-    function sinkIn(bytes memory cfg, bool zeroForOne, uint256 amount) public {
+    // Inside the lock: sell exactly `amount` of the input currency, at the price `limit` (0: the
+    // extreme limit). Pay first and swap what the singleton credited, which is what a token taking a
+    // fee on transfer actually delivered (for any other token it is all of it). A sale the pool
+    // stops short, at the limit or past its last liquidity, fails: what it did not take would stay
+    // with VanHelsing.
+    function sinkIn(bytes memory cfg, bool zeroForOne, uint256 amount, uint160 limit) public {
         uint256 paid = settle(cfg, zeroForOne, amount);
-        (uint256 used,) = swapTo(cfg, zeroForOne, -int256(paid), zeroForOne ? V4Config.MIN_SQRT : V4Config.MAX_SQRT);
-        if (used == paid) return;
-        bool zfo = V4Config.aligned(cfg) ? zeroForOne : !zeroForOne;
-        PoolKey memory k = key(cfg);
-        Currency cIn = zfo ? k.currency0 : k.currency1;
-        POOL_MANAGER.take(cIn, address(this), paid - used);
-        if (cIn.isAddressZero()) IWBNB(V4Config.WBNB).deposit{value: paid - used}();
+        if (limit == 0) limit = zeroForOne ? V4Config.MIN_SQRT : V4Config.MAX_SQRT;
+        (uint256 used,) = swapTo(cfg, zeroForOne, -int256(paid), limit);
+        require(used == paid, "SINK_SHORT");
     }
 }

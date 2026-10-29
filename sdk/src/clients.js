@@ -1,18 +1,32 @@
-import { createPublicClient, http } from "viem";
+import { createPublicClient, defineChain, http } from "viem";
 import { bsc, mainnet } from "viem/chains";
 
+// Robinhood Chain, defined here: viem names it only in releases newer than the 2.54 the SDK asks
+// for.
+const robinhood = defineChain({
+    id: 4663,
+    name: "Robinhood Chain",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
+    blockExplorers: { default: { name: "Blockscout", url: "https://robinhoodchain.blockscout.com" } },
+});
+
 // The chains planWards knows by slug or chain id, each with a public RPC that serves
-// eth_simulateV1 with state overrides and traced transfers (checked 2026-10-22; viem's own
-// defaults did not all). A public RPC sees the unsigned swap before it is sent, and limits how
-// often it is asked, so a wallet or a router in production passes a client on its own node instead.
-// `nextBlock` is how many seconds after a block the next one is stamped: BNB Chain makes a block
-// every 0.45 s, so the next one is within the second, and Ethereum one every 12 s.
+// eth_simulateV1 with state overrides and traced transfers (checked 2026-10-22, Robinhood Chain's
+// 2026-10-27; viem's own defaults did not all). A public RPC sees the unsigned swap before it is
+// sent, and limits how often it is asked, so a wallet or a router in production passes a client on
+// its own node instead. `nextBlock` is how many seconds after a block the next one is stamped: BNB
+// Chain makes a block every 0.45 s and Robinhood Chain one every 0.1 s, so the next one is within
+// the second, and Ethereum one every 12 s.
 export const RPCS = {
     bsc: { chain: bsc, url: "https://bsc-dataseed.bnbchain.org", nextBlock: 1 },
     ethereum: { chain: mainnet, url: "https://ethereum-rpc.publicnode.com", nextBlock: 12 },
+    robinhood: { chain: robinhood, url: "https://rpc.mainnet.chain.robinhood.com", nextBlock: 1 },
 };
 
-const KNOWN = Object.entries(RPCS).map(([slug, rpc]) => `${slug} (${rpc.chain.id})`).join(" or ");
+// "a, b or c"
+const either = (items) => (items.length > 1 ? `${items.slice(0, -1).join(", ")} or ${items.at(-1)}` : `${items[0]}`);
+const KNOWN = either(Object.entries(RPCS).map(([slug, rpc]) => `${slug} (${rpc.chain.id})`));
 const made = new Map();
 
 // The slug of a chain named by its slug or its chain id, or undefined for one it does not know.
@@ -45,7 +59,7 @@ export async function resolveClient({ client, chain, chainId }, who = "planWards
     }
     const named = chain ?? chainId;
     if (!client && named === undefined) {
-        throw new Error(`${who}: pass a client, a chain (${Object.keys(RPCS).join(" or ")}) or a chainId (${Object.values(RPCS).map((r) => r.chain.id).join(" or ")})`);
+        throw new Error(`${who}: pass a client, a chain (${either(Object.keys(RPCS))}) or a chainId (${either(Object.values(RPCS).map((r) => r.chain.id))})`);
     }
     if (!client) return defaultClient(named);
     if (named !== undefined) {

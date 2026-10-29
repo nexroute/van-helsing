@@ -21,7 +21,7 @@ On BNB Chain, verified on BscScan:
   [`0xbE5AFE00a6dB1F9c8Dc83B0767441dAE60404F25`](https://bscscan.com/address/0xbE5AFE00a6dB1F9c8Dc83B0767441dAE60404F25).
 - The implementation behind it today, which a router can call directly to keep exactly the code it
   reviewed, without following upgrades:
-  [`0xe40bC8f5b571d1982822D625A726997A6e1B369a`](https://bscscan.com/address/0xe40bC8f5b571d1982822D625A726997A6e1B369a).
+  [`0x7Bbc725944627D3702501dEa8006d4E0317C091f`](https://bscscan.com/address/0x7Bbc725944627D3702501dEa8006d4E0317C091f).
 
 ## What is here
 

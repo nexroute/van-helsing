@@ -26,23 +26,27 @@ import { DepthRecord } from "./DepthRecord.sol";
 // a deep active tick beside a cliff as deep. It stays a within-region linearization (the
 // same assumption MeetingPrice makes), not a tick-by-tick swap simulation; the maxTicks
 // cap bounds gas, and a walk that reaches it averages over the stretch it covered.
-// Uniswap V3-shaped pools only.
+// Uniswap V3-shaped pools, and Algebra Integral's (effectiveLiquidityList).
 library V3Depth {
     // Walk toward `targetSqrtP`, span-weighting each tick span's liquidity by its width, and
     // return the mean. Returns spot liquidity when
     // the target equals the current price, the budget is zero, or no initialized tick
     // is found in range (a uniform/deep pool, where spot L is already right). Also returns
     // the walk's record, from which a walk toward a nearer target is replayed (DepthRecord).
-    function effectiveLiquidity(address pool, uint160 targetSqrtP, uint256 maxTicks)
+    // `dry` is for a route's hop: when crossing a tick leaves no liquidity, its depth is what the
+    // stretch before holds of the way to the target (DepthRecord.dryDepth). Any walk that runs dry
+    // keeps where in its record (DepthRecord.cliffOf).
+    function effectiveLiquidity(address pool, uint160 targetSqrtP, uint256 maxTicks, bool dry)
         public
         view
         returns (uint128, bytes memory)
     {
         Acc memory a;
-        (a.pool, a.word) = (pool, NO_WORD);
+        (a.pool, a.word, a.dry) = (pool, NO_WORD, dry);
         uint160 curSqrt = _slot0(a); // a.pos: the pool's tick, until _begin compresses it
         a.liq = _liquidity(pool);
         if (maxTicks == 0 || targetSqrtP == curSqrt) return (a.liq, a.rec);
+        (a.cur, a.target) = (curSqrt, targetSqrtP);
 
         int24 spacing = _tickSpacing(pool);
         bool up = targetSqrtP > curSqrt; // restore raises this pool's price
@@ -63,7 +67,30 @@ library V3Depth {
     {
         a.pos = DepthRecord.compress(a.pos, spacing);
         targetComp = DepthRecord.compressedAt(targetSqrtP, spacing);
-        a.rec = DepthRecord.start(up ? DepthRecord.UP : 0, spacing, a.pos, targetComp, cur, a.liq);
+        a.rec = DepthRecord.start((up ? DepthRecord.UP : 0) | (a.dry ? DepthRecord.DRY : 0), spacing, a.pos, targetComp, cur, a.liq);
+    }
+
+    // An Algebra Integral pool's depth: the same walk over raw ticks (spacing 1, since a pool's
+    // spacing can change under positions already placed), from globalState's price and tick, its
+    // initialized ticks found by their links in place of a bitmap: the pool's nextTickGlobal or
+    // prevTickGlobal, then each crossed tick's nextTick or prevTick. So every step crosses one.
+    function effectiveLiquidityList(address pool, uint160 targetSqrtP, uint256 maxTicks, bool dry)
+        public
+        view
+        returns (uint128, bytes memory)
+    {
+        Acc memory a;
+        (a.pool, a.dry) = (pool, dry);
+        uint160 curSqrt = _globalState(a); // a.pos: the pool's tick
+        a.liq = _liquidity(pool);
+        if (maxTicks == 0 || targetSqrtP == curSqrt) return (a.liq, a.rec);
+        (a.cur, a.target) = (curSqrt, targetSqrtP);
+
+        bool up = targetSqrtP > curSqrt;
+        int24 targetComp = _begin(a, up, curSqrt, 1, targetSqrtP);
+        if (targetComp == a.pos) return (a.liq, a.rec);
+        a.word = _neighbor(pool, up); // the first initialized tick the walk meets
+        return (_walkList(a, up, a.liq, maxTicks, targetComp), a.rec);
     }
 
     // The walk toward targetSqrtP replayed from the record of a walk toward a farther target on
@@ -88,6 +115,11 @@ library V3Depth {
         uint256 bits;
         bytes rec; // the walk's record (DepthRecord), none until it starts
         uint256 n; // the steps it took
+        bool dry; // a route hop's walk: its depth at a cliff is DepthRecord.dryDepth
+        bool dried; // it ran dry, its depth in dryL
+        uint128 dryL;
+        uint160 cur; // the price it walks from and the one it walks toward
+        uint160 target;
     }
 
     function _walk(Acc memory a, bool up, int24 spacing, uint128 spot, uint256 maxTicks, int24 targetComp)
@@ -101,9 +133,43 @@ library V3Depth {
             unchecked { ++i; }
         }
         DepthRecord.finish(a.rec, a.n, i == maxTicks);
+        // Liquidity that comes back past the gap before the target, within the rest of the gap's
+        // bitmap word or the next, makes the pool two islands, and a sink crosses the gap into the
+        // second: no cliff is kept. Looking there takes none of the walk's steps, so a walk that ran
+        // dry on its last one looks as far. The walk still reads the first island, as it did.
+        if (!a.dry && DepthRecord.cliffOf(a.rec) != 0 && _resumes(a, up, targetComp, 2)) {
+            DepthRecord.noteCliff(a.rec, 0);
+        }
+        if (a.dried) return a.dryL;
         if (a.tSum == 0) return spot;
         uint256 mean = a.wSum / a.tSum;
         return mean > type(uint128).max ? type(uint128).max : uint128(mean);
+    }
+
+    // Whether an initialized tick lies past the boundary that left no liquidity (the walk's a.pos)
+    // and before the target, within `budget` more steps.
+    function _resumes(Acc memory a, bool up, int24 targetComp, uint256 budget) private view returns (bool) {
+        unchecked {
+            int24 pos = a.pos;
+            for (uint256 k; k < budget; ++k) {
+                (int24 b, bool init) = _nextInitialized(a, pos, up);
+                if (up ? b > targetComp : b <= targetComp) return false;
+                if (init) return true;
+                pos = up ? b : b - 1;
+            }
+            return false;
+        }
+    }
+
+    // A walk's end at compressed tick b, where crossing left no liquidity: the record keeps where,
+    // and a dry walk's depth is what the stretch before holds of the way (`before`, the liquidity
+    // just before, stands for the stretch when no span was counted yet).
+    function _ranDry(Acc memory a, bool up, int24 b, int24 spacing, uint128 before) private pure {
+        (uint160 edge, uint160 cliff) = DepthRecord.edgeAt(b, spacing, false);
+        DepthRecord.noteCliff(a.rec, cliff);
+        if (!a.dry) return;
+        a.dried = true;
+        a.dryL = DepthRecord.dryDepth(a.tSum == 0 ? before : a.wSum / a.tSum, up, edge, a.cur, a.target);
     }
 
     // One span. Every quantity stays far inside its type for any real pool (ticks within
@@ -130,13 +196,79 @@ library V3Depth {
                 _note(a, b, init);
                 return false; // reached the target
             }
+            uint128 before = a.liq;
             if (init) {
                 int128 net = _tickNet(a.pool, int24(b * spacing));
                 a.liq = _applyDelta(a.liq, up ? net : -net);
             }
             _note(a, b, init);
-            if (init && a.liq == 0) return false; // liquidity exhausted
             a.pos = up ? b : b - 1;
+            if (init && a.liq == 0) {
+                _ranDry(a, up, b, spacing, before);
+                return false; // liquidity exhausted
+            }
+            return true;
+        }
+    }
+
+    // _walk for a pool whose initialized ticks are linked: _stepList in place of _step.
+    function _walkList(Acc memory a, bool up, uint128 spot, uint256 maxTicks, int24 targetComp)
+        private
+        view
+        returns (uint128)
+    {
+        uint256 i;
+        for (; i < maxTicks;) {
+            if (!_stepList(a, up, targetComp)) break; // exhausted, at the list's end, or reached target
+            unchecked { ++i; }
+        }
+        DepthRecord.finish(a.rec, a.n, i == maxTicks);
+        // As _walk: the list's next tick (a.word), read already, before the target is where the
+        // liquidity comes back, so no cliff is kept, whatever step the walk ran dry on.
+        if (!a.dry && DepthRecord.cliffOf(a.rec) != 0) {
+            int24 link = int24(a.word);
+            int24 b = up ? a.pos : a.pos + 1;
+            if (up ? link > b && link <= targetComp : link < b && link > targetComp) DepthRecord.noteCliff(a.rec, 0);
+        }
+        if (a.dried) return a.dryL;
+        if (a.tSum == 0) return spot;
+        uint256 mean = a.wSum / a.tSum;
+        return mean > type(uint128).max ? type(uint128).max : uint128(mean);
+    }
+
+    // One span, as _step, its boundary the initialized tick the last link named (a.word, set by
+    // effectiveLiquidityList and then here). A tick's read gives its liquidityDelta, which crosses
+    // as a V3 tick's liquidityNet does, and its links. A link that does not lead on, as the
+    // list's end does (MIN_TICK and MAX_TICK link to themselves), ends the walk.
+    function _stepList(Acc memory a, bool up, int24 targetComp) private view returns (bool) {
+        unchecked {
+            int24 b = int24(a.word);
+            bool clip = up ? (b > targetComp) : (b <= targetComp);
+            int256 from = up || a.n == 0 ? int256(a.pos) : int256(a.pos) + 1;
+            int256 w = clip
+                ? (up ? int256(targetComp) - from : from - int256(targetComp))
+                : (up ? int256(b) - from : from - int256(b));
+            if (w > 0) {
+                a.wSum += uint256(a.liq) * uint256(w);
+                a.tSum += uint256(w);
+            }
+            if (clip) {
+                _note(a, b, true);
+                return false; // reached the target
+            }
+            (int128 net, int24 prev, int24 next) = _tickLinks(a.pool, b);
+            uint128 before = a.liq;
+            a.liq = _applyDelta(a.liq, up ? net : -net);
+            _note(a, b, true);
+            int24 link = up ? next : prev;
+            a.pos = up ? b : b - 1;
+            if (a.liq == 0) {
+                _ranDry(a, up, b, 1, before);
+                a.word = link; // where the liquidity may come back (_walkList)
+                return false; // liquidity exhausted
+            }
+            if (up ? link <= b : link >= b) return false; // the end of the list
+            a.word = link;
             return true;
         }
     }
@@ -211,6 +343,44 @@ library V3Depth {
             tick := signextend(2, mload(0x20))
         }
         a.pos = tick;
+    }
+
+    // An Algebra Integral pool's price, and its tick into a.pos: globalState's first two words.
+    function _globalState(Acc memory a) private view returns (uint160 s) {
+        address pool = a.pool;
+        int24 tick;
+        assembly ("memory-safe") {
+            mstore(0, 0xe76c01e4) // globalState()
+            if iszero(and(gt(returndatasize(), 0x3f), staticcall(gas(), pool, 0x1c, 0x04, 0, 0x40))) { revert(0, 0) }
+            s := and(mload(0), 0xffffffffffffffffffffffffffffffffffffffff)
+            tick := signextend(2, mload(0x20))
+        }
+        a.pos = tick;
+    }
+
+    // The first initialized tick a list walk meets: the pool's nextTickGlobal going up, its
+    // prevTickGlobal (at or below its tick) going down.
+    function _neighbor(address pool, bool up) private view returns (int24 t) {
+        uint256 sel = up ? 0xd5c35a7e : 0x050a4d21; // nextTickGlobal() : prevTickGlobal()
+        assembly ("memory-safe") {
+            mstore(0, sel)
+            if iszero(and(gt(returndatasize(), 0x1f), staticcall(gas(), pool, 0x1c, 0x04, 0, 0x20))) { revert(0, 0) }
+            t := signextend(2, mload(0))
+        }
+    }
+
+    // An Algebra Integral tick's liquidityDelta and its links: the second to fourth words of
+    // ticks(tick), (liquidityTotal, liquidityDelta, prevTick, nextTick, ...).
+    function _tickLinks(address pool, int24 tick) private view returns (int128 net, int24 prev, int24 next) {
+        assembly ("memory-safe") {
+            mstore(0, 0xf30dba93) // ticks(int24)
+            mstore(0x20, signextend(2, tick))
+            if iszero(and(gt(returndatasize(), 0x7f), staticcall(gas(), pool, 0x1c, 0x24, 0, 0x40))) { revert(0, 0) }
+            net := signextend(15, mload(0x20))
+            returndatacopy(0, 0x40, 0x40)
+            prev := signextend(2, mload(0))
+            next := signextend(2, mload(0x20))
+        }
     }
 
     function _liquidity(address pool) private view returns (uint128 l) {

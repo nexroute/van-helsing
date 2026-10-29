@@ -1,7 +1,8 @@
 import { ethers } from "ethers";
 
-// Pancake Infinity CLPoolManager (BSC), part of a Pancake pool's poolId hash.
-const CL = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b";
+// Pancake Infinity's CLPoolManager, part of a Pancake pool's poolId hash: BNB Chain's, or Robinhood
+// Chain's in its build (VH_CHAIN=robinhood).
+const CL = process.env.VH_CHAIN === "robinhood" ? "0xd01C774d4A66408326Bc65728Ac5Ae5aAf004032" : "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b";
 const coder = ethers.AbiCoder.defaultAbiCoder();
 
 // bytes32 id for a V2/V3/stableswap pool: its address zero-padded to 32 bytes

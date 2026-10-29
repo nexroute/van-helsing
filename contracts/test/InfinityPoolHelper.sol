@@ -8,6 +8,7 @@ import { Currency } from "@pancakeswap/v4-core/src/types/Currency.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
 import { InfinityLib, IInfinityVault } from "../libraries/InfinityLib.sol";
 import { V4Config } from "../libraries/V4Config.sol";
+import { Chain } from "../libraries/Chain.sol";
 
 // What this helper calls of Pancake's CLPoolManager, declared as Pancake's ICLPoolManager declares
 // it, each BalanceDelta read as the int256 it packs (amount0 in the high 128 bits, amount1 in the
@@ -39,8 +40,8 @@ contract InfinityPoolHelper {
     using PoolIdLibrary for PoolKey;
     using SafeTransferLib for address;
 
-    IInfinityVault internal constant VAULT = IInfinityVault(0x238a358808379702088667322f80aC48bAd5e6c4);
-    ICLPoolManagerCalls internal constant CL = ICLPoolManagerCalls(0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b);
+    IInfinityVault internal constant VAULT = IInfinityVault(Chain.INFINITY_VAULT);
+    ICLPoolManagerCalls internal constant CL = ICLPoolManagerCalls(Chain.INFINITY_CL_POOL_MANAGER);
 
     function addLiquidity(PoolKey calldata key, int24 tickLower, int24 tickUpper, int256 liquidity) external {
         VAULT.lock(abi.encode(false, key, abi.encode(tickLower, tickUpper, liquidity)));

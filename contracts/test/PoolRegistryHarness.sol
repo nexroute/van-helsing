@@ -68,7 +68,7 @@ contract PoolRegistryHarness is PoolRegistry {
     // A V4/Infinity config's key word (PoolRegistry.poolKeys), zero when it does not pack, and
     // its pool's shape (IPoolRegistry.Pool). It packs when configOf can give it back from the
     // word and the pool's entry: a Uniswap V4 pool's parameters are zero and an Infinity
-    // pool's fit 40 bits, and a native pool's other currency is not WBNB.
+    // pool's fit 40 bits, and a native pool's other currency is not the wrapped native one.
     function _pack(bytes calldata c) private pure returns (uint256 w, uint32 shape) {
         if (c.length != 99 || (c[0] != bytes1(0x04) && c[0] != bytes1(0x06))) return (0, 0);
         bool native = bytes20(c[1:21]) == bytes20(0);
@@ -76,7 +76,7 @@ contract PoolRegistryHarness is PoolRegistry {
         uint256 params = uint256(bytes32(c[67:99]));
         shape = uint32(ts) | (native ? uint32(1 << 24) : 0);
         bool packs = (c[0] == bytes1(0x04) ? params == 0 : params >> 40 == 0)
-            && !(native && address(bytes20(c[21:41])) == WBNB);
+            && !(native && address(bytes20(c[21:41])) == WRAPPED_NATIVE);
         if (!packs) return (0, shape);
         w = uint256(uint160(bytes20(c[47:67]))) | uint256(uint24(bytes3(c[41:44]))) << 160 | ts << 184
             | (native ? uint256(1) << 208 : 0) | params << 216;

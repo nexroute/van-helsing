@@ -5,23 +5,32 @@
 // again with what its sender sent before it in its block, such as its approval, as a wallet that
 // batches them would plan them, against the pools they all touched.
 //
-//   node scripts/replay.mjs <rpc> [blocks=100] [span=40000]
+//   node scripts/replay.mjs <rpc> [blocks=100] [span=40000] [parallel=8]
 //
-// It samples `blocks` BNB Chain blocks spread over the last `span`. The RPC must serve
-// eth_simulateV1 on their parents: an archive node, or a node that keeps that much state.
+// It samples `blocks` blocks of the RPC's chain spread over the last `span`, planning `parallel`
+// swaps at a time. The RPC must serve eth_simulateV1 on their parents: an archive node, or a node
+// that keeps that much state. Robinhood Chain's public RPC keeps about 4,000 blocks and throttles
+// parallel calls: a span of 3,000 there, two at a time.
 // A router three or more senders use in the sample counts as shared: what wallets and apps send,
 // apart from the bots' own contracts.
 import { createPublicClient, http } from "viem";
-import { bsc } from "viem/chains";
+import { RPCS } from "../src/clients.js";
 import { identifyPoolIds } from "../src/identify.js";
 import { planWards } from "../src/plan.js";
 
-const [rpc, blocks = "100", span = "40000"] = process.argv.slice(2);
+const [rpc, blocks = "100", span = "40000", parallel = "8"] = process.argv.slice(2);
 if (!rpc) {
-    console.error("usage: node scripts/replay.mjs <rpc> [blocks=100] [span=40000]");
+    console.error("usage: node scripts/replay.mjs <rpc> [blocks=100] [span=40000] [parallel=8]");
     process.exit(1);
 }
-const client = createPublicClient({ chain: bsc, transport: http(rpc, { timeout: 60_000, retryCount: 3 }) });
+const transport = http(rpc, { timeout: 60_000, retryCount: 6, retryDelay: 500 });
+const chainId = await createPublicClient({ transport }).getChainId();
+const chain = Object.values(RPCS).find((r) => r.chain.id === chainId)?.chain;
+if (!chain) {
+    console.error(`chain ${chainId}: the SDK knows ${Object.values(RPCS).map((r) => r.chain.id).join(", ")}`);
+    process.exit(1);
+}
+const client = createPublicClient({ chain, transport });
 const hex = (n) => `0x${n.toString(16)}`;
 const ids = (logs) => identifyPoolIds(logs).map((p) => p.id);
 // planWards finds the pools on its first simulation and stops there when it is to send no ward;
@@ -58,7 +67,7 @@ for (let k = 0n; k < BigInt(blocks); k++) {
     ]);
     const truths = receipts.map((r) => (r.status === "0x1" ? ids(r.logs) : []));
     const swaps = block.transactions.map((tx, i) => ({ tx, i, truth: truths[i] })).filter((s) => s.truth.length > 0);
-    await inParallel(swaps, 8, async ({ tx, i, truth }) => {
+    await inParallel(swaps, Number(parallel), async ({ tx, i, truth }) => {
         const alone = await poolsOf(tx, n - 1n);
         const row = { to: tx.to, from: tx.from, alone: alone ? compare(alone, truth) : "reverted" };
         const earlier = block.transactions.slice(0, i).filter((t) => t.from === tx.from);

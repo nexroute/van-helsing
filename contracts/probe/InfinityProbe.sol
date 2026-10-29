@@ -7,6 +7,7 @@ import { Currency } from "@pancakeswap/v4-core/src/types/Currency.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
 import { InfinityLib, IInfinityCL, IInfinityVault } from "../libraries/InfinityLib.sol";
 import { V4Config } from "../libraries/V4Config.sol";
+import { Chain } from "../libraries/Chain.sol";
 
 // The Van Helsing node's pool probe for this singleton: an exact-input swap of any pool, hooks
 // included, paid from and taken to the probe's own balances. The node places it in a
@@ -15,8 +16,8 @@ import { V4Config } from "../libraries/V4Config.sol";
 contract InfinityProbe {
     using SafeTransferLib for address;
 
-    IInfinityVault internal constant VAULT = IInfinityVault(0x238a358808379702088667322f80aC48bAd5e6c4);
-    IInfinityCL internal constant CL = IInfinityCL(0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b);
+    IInfinityVault internal constant VAULT = IInfinityVault(Chain.INFINITY_VAULT);
+    IInfinityCL internal constant CL = IInfinityCL(Chain.INFINITY_CL_POOL_MANAGER);
 
     // Swap amountIn of the input currency; returns the output taken.
     function swap(PoolKey calldata key, bool zeroForOne, uint256 amountIn) external returns (uint256) {

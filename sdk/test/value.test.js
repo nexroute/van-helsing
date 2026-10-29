@@ -34,6 +34,13 @@ test("Ethereum: WETH one for one, USDC and USDT with 6 decimals, DAI with 18", (
     assert.equal(worth("0x6B175474E89094C44Da98b954EedeAC495271d0F", 2000n * ONE), ONE, "DAI");
 });
 
+test("Robinhood Chain: WETH one for one, USDG with 6 decimals", () => {
+    const worth = nativeWorth(CHAINS[4663], { native: usd(2000) });
+    assert.equal(worth("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", ONE), ONE, "WETH");
+    assert.equal(worth("0x5fc5360D0400a0fD4f2aF552AdD042d716F1D168", 2000n * 10n ** 6n), ONE, "USDG");
+    assert.equal(worth("0x0000000000000000000000000000000000000dd0", ONE), null);
+});
+
 test("no stablecoin price without the native token's feed", () => {
     assert.equal(nativeWorth(CHAINS[56], { native: null })("0x55d398326f99059fF775485246999027B3197955", ONE), null);
 });

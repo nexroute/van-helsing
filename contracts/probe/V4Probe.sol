@@ -9,6 +9,7 @@ import { BalanceDelta } from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import { SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
+import { Chain } from "../libraries/Chain.sol";
 
 // The Van Helsing node's pool probe for this singleton: an exact-input swap of any pool, hooks
 // included, paid from and taken to the probe's own balances. The node places it in a
@@ -17,7 +18,7 @@ import { SafeTransferLib } from "solady/src/utils/SafeTransferLib.sol";
 contract V4Probe {
     using SafeTransferLib for address;
 
-    IPoolManager internal constant PM = IPoolManager(0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF);
+    IPoolManager internal constant PM = IPoolManager(Chain.UNI_V4_POOL_MANAGER);
 
     // Swap amountIn of the input currency; returns the output taken.
     function swap(PoolKey calldata key, bool zeroForOne, uint256 amountIn) external returns (uint256) {

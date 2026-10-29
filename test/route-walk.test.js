@@ -94,9 +94,8 @@ describe("RouteLib.effectiveLiquidity (near == tok1 walk direction)", function (
         // sqrtPrice move is itself a huge swing (real tick +-13864, compressed +-1386 at
         // this hop's spacing=10), far beyond where this hop's OWN liquidity already hits
         // exact zero (it crosses tick -10 going down, tick 1000 going up; see the golden
-        // model below). V3Depth's walk stops on that exhaustion (liq==0) before the
-        // ratio-target binds, so both moves are "far": each reads what a walk toward the
-        // extreme would. A genuinely SMALL move, one the ratio-target clips, is covered
+        // model below). There the dry walk reads what the hop holds of the way to the
+        // ratio-target. A genuinely SMALL move, one the ratio-target clips, is covered
         // separately below, where it is the point.
         const defHigh = sSpot * 2n; // > spot => up=true  => near==tok1 => toMax=!up=false => walk toward MIN
         const defLow = sSpot / 2n; // < spot => up=false => near==tok1 => toMax=!up=true  => walk toward MAX
@@ -110,8 +109,16 @@ describe("RouteLib.effectiveLiquidity (near == tok1 walk direction)", function (
         // regardless of the near/tok0 vs near/tok1 mapping, which lets this golden
         // computation stay agnostic to that mapping while still pinning the *value*
         // of L1 (and hence the composite l) to the direction under test.
-        const L1_min = spot; // walking hop1 toward MIN: exhausts past tick -10, mean == spot
-        const L1_max = (spot * 1n + deep * 99n) / 100n; // walking toward MAX: crosses into the deep run, exhausts past tick 1000
+        // A route is always a sink, so its hops walk dry: where a hop runs out of liquidity, its
+        // depth is what the stretch before holds of the way to its target, in sqrt price. Toward MIN
+        // the target is Q96/2 and the hop runs dry past tick -10 after one spacing at spot, holding
+        // spot * (1/e - 1) of token0 where e = sqrt(1.0001^-10); toward MAX the target is
+        // Q96 * sSpot / (sSpot / 2) and it runs dry past tick 1000 after one spacing at spot and 99
+        // at deep, holding their mean times (sqrt(1.0001^1000) - 1) of token1. Floats, close enough.
+        const eMin = Math.sqrt(1.0001 ** -10), eMax = Math.sqrt(1.0001 ** 1000);
+        const tMax = Number((Q96 * sSpot) / (sSpot / 2n)) / 2 ** 96;
+        const L1_min = BigInt(Math.round(((Number(spot) * (1 - eMin)) / (1 - 0.5)) * (0.5 / eMin)));
+        const L1_max = BigInt(Math.round((Number((spot * 1n + deep * 99n) / 100n) * (eMax - 1)) / (tMax - 1)));
         function compositeL(L1) {
             const den = L1 + R; // r1.far (==L1) + r2.near (==R)
             const v0 = (L1 * R) / den;
@@ -120,8 +127,9 @@ describe("RouteLib.effectiveLiquidity (near == tok1 walk direction)", function (
         }
         const expHigh = compositeL(L1_min);
         const expLow = compositeL(L1_max);
-        expect(effHigh >= expHigh - 4n && effHigh <= expHigh + 4n, `effHigh ${effHigh} vs ${expHigh}`).to.equal(true);
-        expect(effLow >= expLow - 4n && effLow <= expLow + 4n, `effLow ${effLow} vs ${expLow}`).to.equal(true);
+        const close = (got, want) => Math.abs(Number(got) / Number(want) - 1) < 1e-6;
+        expect(close(effHigh, expHigh), `effHigh ${effHigh} vs ${expHigh}`).to.equal(true);
+        expect(close(effLow, expLow), `effLow ${effLow} vs ${expLow}`).to.equal(true);
 
         // The rule (near==tok1 => toMax=!up) walks AWAY from the deep side when up, so
         // defHigh reads the thin spot and defLow reads the deep run: effLow must come
