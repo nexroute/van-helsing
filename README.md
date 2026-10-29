@@ -30,8 +30,10 @@ On BNB Chain, verified on BscScan:
   test fixtures (`test/`).
 - `ignition/`: the deployment: the registry, the libraries, and Van Helsing behind its proxy.
 - `lib/`: the Hardhat configuration and the helpers the tests and the deployment share.
-- `sdk/`: [`@nexroute/van-helsing`](sdk/README.md), which plans the wards around a swap, on npm at
+- `sdk/`: [`@nexroute/van-helsing`](sdk/README.md), which identifies the swaps in a transaction and
+  plans the wards around them, on npm at
   [npmjs.com/package/@nexroute/van-helsing](https://www.npmjs.com/package/@nexroute/van-helsing).
+  It is optional: a ward is one call, `ward(id, payee)`, which any language can send.
 - `test/`: the contracts' tests.
 
 ## Build and test
