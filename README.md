@@ -10,7 +10,8 @@ reverts the transaction it runs in.
 Van Helsing sits behind a transparent proxy whose admin is the team's Safe, with no timelock, and
 the registry it reads its pools from is written by an operator key the same Safe appoints.
 
-The guides, for wallets, aggregators, exchanges, RPC providers, builders, AMMs and traders, are at
+A ward is one call, `ward(id, payee)`, which any language can send. The guides, for wallets,
+aggregators, exchanges, RPC providers, builders, AMMs and traders, and the recipes are at
 [vanhelsing.nexroute.io](https://vanhelsing.nexroute.io).
 
 ## Deployment
@@ -30,10 +31,6 @@ On BNB Chain, verified on BscScan:
   test fixtures (`test/`).
 - `ignition/`: the deployment: the registry, the libraries, and Van Helsing behind its proxy.
 - `lib/`: the Hardhat configuration and the helpers the tests and the deployment share.
-- `sdk/`: [`@nexroute/van-helsing`](sdk/README.md), which identifies the swaps in a transaction and
-  plans the wards around them, on npm at
-  [npmjs.com/package/@nexroute/van-helsing](https://www.npmjs.com/package/@nexroute/van-helsing).
-  It is optional: a ward is one call, `ward(id, payee)`, which any language can send.
 - `test/`: the contracts' tests.
 
 ## Build and test
@@ -45,12 +42,10 @@ VH_NO_FORK=1 npx hardhat test mocha   # the tests that need no fork of BNB Chain
 npx hardhat test mocha                # all of them, on a fork: BSC_ARCHIVE_URL, or the public Blast archive
 ```
 
-To test the SDK alone, run `npm ci && npm test` in `sdk/`.
-
 ## License
 
 Van Helsing is under the Business Source License 1.1 (`LICENSE`): the licensor is Remora
 Technologies Corp., and on 2030-10-22 it moves to GPL-2.0-or-later. The few lines adapted from
-Uniswap v4-core keep Uniswap's MIT notice (`NOTICE`). The SDK (`sdk/`) is under MIT.
+Uniswap v4-core keep Uniswap's MIT notice (`NOTICE`).
 
 This repository is published from Van Helsing's development repository at each release.

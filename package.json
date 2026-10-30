@@ -1,9 +1,6 @@
 {
   "name": "van-helsing",
   "version": "1.0.0",
-  "workspaces": [
-    "sdk"
-  ],
   "dependencies": {
     "@openzeppelin/contracts": "^5.4.0",
     "@pancakeswap/v4-core": "github:pancakeswap/infinity-core#7c04695faeab8b06570cf6c277d9a9717136fb26",
